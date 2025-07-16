@@ -1,20 +1,8 @@
 import streamlit as st
-import os
 import yt_dlp
 import time
 import re
-
-# === CONFIGURACIÓN DE CARPETAS ===
-CARPETAS = {
-    'YouTube': 'downloads/youtube',
-    'TikTok': 'downloads/tiktok',
-    'Instagram': 'downloads/instagram',
-    'Facebook': 'downloads/facebook',
-    'X (Twitter)': 'downloads/x'
-}
-
-for carpeta in CARPETAS.values():
-    os.makedirs(carpeta, exist_ok=True)
+from io import BytesIO
 
 # === FUNCIONES DE VALIDACIÓN ===
 
@@ -49,8 +37,6 @@ def detectar_plataforma(url):
         return "X (Twitter)"
     return None
 
-# === FUNCIÓN: OBTENER INFO DEL VIDEO ===
-
 
 def obtener_info_video(url):
     try:
@@ -64,27 +50,10 @@ def obtener_info_video(url):
     except Exception:
         return None
 
-# === FUNCIÓN: DESCARGAR VIDEO O AUDIO CON PROGRESO Y VERIFICACIÓN ===
 
+def descargar_y_retornar(url, modo, calidad, barra_progreso):
+    buffer = BytesIO()
 
-def descargar_video(url, plataforma, modo, calidad, barra_progreso):
-    carpeta_destino = CARPETAS[plataforma]
-
-    # Intentar obtener info para verificar existencia previa
-    try:
-        info_pre = yt_dlp.YoutubeDL(
-            {'quiet': True}).extract_info(url, download=False)
-        titulo = info_pre.get("title", "video").strip().replace(
-            "/", "_").replace("\\", "_")
-        extension = "mp3" if modo == "Solo audio (.mp3)" else "mp4"
-        nombre_final = f"{titulo}.{extension}"
-        ruta_archivo = os.path.join(carpeta_destino, nombre_final)
-        if os.path.exists(ruta_archivo):
-            return False, "⚠️ El video ya fue descargado anteriormente."
-    except Exception:
-        pass
-
-    # Barra de progreso
     def hook(d):
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate')
@@ -98,16 +67,16 @@ def descargar_video(url, plataforma, modo, calidad, barra_progreso):
             barra_progreso.empty()
 
     opciones = {
-        'progress_hooks': [hook],
-        'outtmpl': os.path.join(carpeta_destino, '%(title)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
-        'noplaylist': True
+        'progress_hooks': [hook],
+        'noplaylist': True,
+        'outtmpl': '-',  # stdout
     }
 
     if modo == "Solo audio (.mp3)":
         opciones.update({
-            'format': 'best',  # 👈 Cambiado de 'bestaudio' a 'best' para compatibilidad
+            'format': 'best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -117,41 +86,30 @@ def descargar_video(url, plataforma, modo, calidad, barra_progreso):
     else:
         opciones['format'] = 'best' if calidad == 'Alta' else 'worst[height<=360]'
 
+    opciones['outtmpl'] = '%(title)s.%(ext)s'
+
     try:
         with yt_dlp.YoutubeDL(opciones) as ydl:
-            ydl.download([url])
-        return True, f"✅ Archivo guardado en: `{carpeta_destino}`"
+            info = ydl.extract_info(url, download=True)
+            titulo = info.get('title', 'video')
+            extension = 'mp3' if modo == "Solo audio (.mp3)" else 'mp4'
+            nombre_archivo = f"{titulo}.{extension}"
+
+            ruta_archivo = f"{nombre_archivo}"
+            with open(ruta_archivo, "rb") as f:
+                buffer.write(f.read())
+            buffer.seek(0)
+            return buffer, nombre_archivo, None
     except Exception as e:
-        return False, f"❌ Error al descargar: {e}"
-
-# === FUNCIÓN: MOSTRAR DESCARGAS EXISTENTES ===
-
-
-def mostrar_descargas(plataforma):
-    carpeta = os.path.abspath(CARPETAS[plataforma])
-    archivos = os.listdir(carpeta)
-    archivos = [f for f in archivos if not f.startswith(".")]
-
-    if archivos:
-        st.markdown(f"### 📂 Archivos descargados en *{plataforma}*:")
-        for archivo in sorted(archivos, reverse=True):
-            ruta = os.path.join(carpeta, archivo)
-            link = f"file://{ruta}"
-            st.markdown(
-                f'<a href="{link}" target="_blank">📄 {archivo}</a>',
-                unsafe_allow_html=True
-            )
-    else:
-        st.info("🕸️ Aún no hay descargas registradas en esta red social.")
+        return None, None, str(e)
 
 
 # === INTERFAZ DE USUARIO ===
 st.set_page_config(page_title="Kryzcroft Downloader", layout="centered")
-st.title("📥 Descarga tus Videos o Extrae el Audio")
+st.title("📥 Hola! aqui podras descargar tus videos favoritos o el audio.")
 st.markdown(
     "Compatible con: **YouTube, TikTok, Instagram, Facebook y X (Twitter)**")
 
-# LIMPIEZA CONTROLADA
 if st.session_state.get("limpiar_input"):
     st.session_state.input_url = ""
     st.session_state.limpiar_input = False
@@ -159,7 +117,6 @@ if st.session_state.get("limpiar_input"):
 st.text_input("🔗 Pega el enlace del video", key="input_url")
 url = st.session_state.input_url.strip()
 
-# === VALIDACIONES ===
 if url and not es_enlace_valido(url):
     st.warning("⚠️ El enlace no pertenece a una red social válida.")
     st.stop()
@@ -175,7 +132,6 @@ if not plataforma:
 else:
     st.markdown(f"🌐 Plataforma detectada: **{plataforma}**")
 
-# === VISTA PREVIA DEL VIDEO ===
 if url:
     info = obtener_info_video(url)
     if info:
@@ -191,10 +147,7 @@ if url:
             minutos = duracion // 60
             segundos = duracion % 60
             st.markdown(f"**⏱️ Duración:** {minutos} min {segundos} seg")
-        else:
-            st.markdown("**⏱️ Duración:** No disponible")
 
-# === OPCIONES DE DESCARGA ===
 modo = st.radio("🎵 ¿Qué deseas descargar?", ["Video", "Solo audio (.mp3)"])
 
 if modo == "Video":
@@ -202,18 +155,21 @@ if modo == "Video":
 else:
     calidad = None
 
-# === DESCARGA ===
 if st.button("Descargar"):
     if not url:
         st.warning("⚠️ Debes ingresar un enlace.")
     else:
         barra = st.progress(0)
-        exito, mensaje = descargar_video(url, plataforma, modo, calidad, barra)
-        if exito:
-            st.toast("✅ Descarga completada.", icon="📥")
+        buffer, nombre_archivo, error = descargar_y_retornar(
+            url, modo, calidad, barra)
+        if buffer:
+            st.toast("✅ Descarga completada", icon="📥")
             st.session_state.limpiar_input = True
+            st.download_button(
+                label=f"📄 Descargar {nombre_archivo}",
+                data=buffer,
+                file_name=nombre_archivo,
+                mime="application/octet-stream"
+            )
         else:
-            st.warning(mensaje)
-
-# === HISTORIAL ===
-mostrar_descargas(plataforma)
+            st.error(f"❌ Error: {error}")
